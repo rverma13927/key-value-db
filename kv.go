@@ -8,12 +8,16 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
-
+type Entry struct {
+	value    string
+	expireAt time.Time
+}
 type KeyValueDb struct {
-	db   map[string]string
-	mu   sync.RWMutex
-	file *os.File
+	db       map[string]Entry
+	mu       sync.RWMutex
+	file     *os.File
 }
 
 func NewKeyValueDb() *KeyValueDb {
@@ -23,19 +27,23 @@ func NewKeyValueDb() *KeyValueDb {
 		return nil
 	}
 	return &KeyValueDb{
-		db:   make(map[string]string),
-		mu:   sync.RWMutex{},
-		file: file,
+		db:       make(map[string]Entry),
+		mu:       sync.RWMutex{},
+		file:     file,
 	}
 }
 func (db *KeyValueDb) Load() error {
 	scanner := bufio.NewScanner(db.file)
 	for scanner.Scan() {
 		line := scanner.Text()
-
+	
 		data := strings.Split(line, ",")
+
 		if data[0] == "SET" {
-			db.db[data[1]] = data[2]
+			t, err := time.Parse(time.RFC3339, data[3])
+			if err == nil && t.After(time.Now()) {
+				db.db[data[1]] = Entry{value:data[2],expireAt:	t}
+			}
 		} else if data[0] == "DELETE" {
 			delete(db.db, data[1])
 		}
@@ -47,15 +55,16 @@ func (db *KeyValueDb) Set(key string, value string) (string, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	line := "SET," + key + "," + value + "\n"
-	val, error := db.file.Write([]byte(line))
-	fmt.Println(val)
+	expiry := time.Now().Add(time.Minute * 10)
+	line := fmt.Sprintf("SET,%s,%s,%s\n", key, value, expiry.Format(time.RFC3339))
+	_, error := db.file.Write([]byte(line))
 
 	if error != nil {
 		fmt.Println("Error while writing to file", error)
 	}
 	fmt.Println("inside Set", value)
-	db.db[key] = value
+	
+	db.db[key] = Entry{value:value,expireAt:time.Now().Add(time.Minute * 10)}
 	return "Value has been set", nil
 }
 
@@ -77,11 +86,15 @@ func (db *KeyValueDb) Get(key string) (string, error) {
 	defer db.mu.RUnlock()
 
 	fmt.Println(" Get", db.db[key])
-	value, exists := db.db[key]
+	entry, exists := db.db[key]
+	
+	if entry.expireAt.Before(time.Now()) {
+		return "Key has expired",nil;
+	}
 	if !exists {
 		return "", errors.New("key does not exist")
 	}
-	return value, nil
+	return entry.value, nil
 }
 
 func (db *KeyValueDb) Delete(key string) (string, error) {
