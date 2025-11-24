@@ -9,15 +9,16 @@ import (
 var db *kv.KeyValueDb
 
 func HandleSet(w http.ResponseWriter, r *http.Request) {
+	bucket := r.URL.Query().Get("bucket")
 	key := r.URL.Query().Get("key")
 	value := r.URL.Query().Get("value")
 
-	if key == "" || value == "" {
-		http.Error(w, "Missing key or value", http.StatusBadRequest)
+	if bucket == "" || key == "" || value == "" {
+		http.Error(w, "Missing bucket, key or value", http.StatusBadRequest)
 		return
 	}
 
-	msg, err := db.Set(key, value)
+	msg, err := db.Set(bucket, key, value)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -26,14 +27,15 @@ func HandleSet(w http.ResponseWriter, r *http.Request) {
 }
 
 func HandleGet(w http.ResponseWriter, r *http.Request) {
+	bucket := r.URL.Query().Get("bucket")
 	key := r.URL.Query().Get("key")
 
-	if key == "" {
-		http.Error(w, "Missing key", http.StatusBadRequest)
-		return
+	if bucket == "" || key == "" {
+		http.Error(w, "Missing bucket or key", http.StatusBadRequest)
+		return	
 	}
 
-	val, err := db.Get(key)
+	val, err := db.Get(bucket, key)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
