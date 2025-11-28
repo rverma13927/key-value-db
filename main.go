@@ -1,7 +1,6 @@
 package main
 
 import (
-
 	"kvdb/kv"
 	"strconv"
 	"sync"
@@ -23,14 +22,15 @@ func main() {
 
 		go func() {
 			defer wg.Done()
-			db.Set("Y","1", strconv.Itoa(i))
+			db.Set("Y", "1", strconv.Itoa(i))
 		}()
 		go func() {
 			defer wg.Done()
 
-			db.Get("Y","1")
+			db.Get("Y", "1")
 			//fmt.Println(val, err);
 		}()
 	}
 	wg.Wait()
+	db.Merge()
 }

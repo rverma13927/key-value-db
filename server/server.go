@@ -32,7 +32,7 @@ func HandleGet(w http.ResponseWriter, r *http.Request) {
 
 	if bucket == "" || key == "" {
 		http.Error(w, "Missing bucket or key", http.StatusBadRequest)
-		return	
+		return
 	}
 
 	val, err := db.Get(bucket, key)

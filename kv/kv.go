@@ -111,3 +111,34 @@ func (db *KeyValueDb) Delete(bucket string, key string) (string, error) {
 	delete(db.db[bucket], key)
 	return "Value has been deleted", nil
 }
+func (db *KeyValueDb) Merge() {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	temp, err := os.OpenFile("temp.log", os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+
+	if err != nil {
+		fmt.Println("Error while opening temp file", err)
+	}
+
+	for key, _ := range db.db {
+		for k, v := range db.db[key] {
+
+			if !v.ExpireAt.Before(time.Now()) {
+				line := fmt.Sprintf("SET,%s,%s,%s,%s\n", key, k, v.Value, v.ExpireAt.Format(time.RFC3339))
+				temp.Write([]byte(line))
+			}
+		}
+	}
+
+	db.file.Close()
+	temp.Close()
+
+	os.Rename("temp.log", "db.log")
+
+	db.file, err = os.OpenFile("db.log", os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+	if err != nil {
+		fmt.Println("Error opening file", err)
+		return
+	}
+}
