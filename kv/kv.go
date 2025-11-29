@@ -21,8 +21,8 @@ type KeyValueDb struct {
 	file *os.File
 }
 
-func NewKeyValueDb() *KeyValueDb {
-	file, err := os.OpenFile("db.log", os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+func NewKeyValueDb(filename string) *KeyValueDb {
+	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
 		fmt.Println("Error opening file", err)
 		return nil
@@ -36,23 +36,74 @@ func NewKeyValueDb() *KeyValueDb {
 
 func (db *KeyValueDb) Load() error {
 	scanner := bufio.NewScanner(db.file)
+
+	// Buffer for current transaction
+	pendingBatch := make(map[string]map[string]Entry)
+	inTransaction := false
+
 	for scanner.Scan() {
 		line := scanner.Text()
 
+		if line == "TX_BEGIN" {
+			inTransaction = true
+			pendingBatch = make(map[string]map[string]Entry)
+			continue
+		}
+
+		if line == "TX_COMMIT" {
+			if inTransaction {
+				// Apply pending batch to real DB
+				for bucket, entries := range pendingBatch {
+					if _, ok := db.db[bucket]; !ok {
+						db.db[bucket] = make(map[string]Entry)
+					}
+					for key, entry := range entries {
+						db.db[bucket][key] = entry
+					}
+				}
+			}
+			inTransaction = false
+			pendingBatch = make(map[string]map[string]Entry)
+			continue
+		}
+
 		data := strings.Split(line, ",")
+		if len(data) < 4 {
+			continue
+		}
 
 		if data[0] == "SET" {
 			t, err := time.Parse(time.RFC3339, data[4])
-			_, ok := db.db[data[1]]
-
-			if !ok {
-				db.db[data[1]] = make(map[string]Entry)
-			}
 			if err == nil && t.After(time.Now()) {
-				db.db[data[1]][data[2]] = Entry{Value: data[3], ExpireAt: t}
+				entry := Entry{Value: data[3], ExpireAt: t}
+				bucket := data[1]
+				key := data[2]
+
+				if inTransaction {
+					if _, ok := pendingBatch[bucket]; !ok {
+						pendingBatch[bucket] = make(map[string]Entry)
+					}
+					pendingBatch[bucket][key] = entry
+				} else {
+					// Legacy support (lines outside TX)
+					if _, ok := db.db[bucket]; !ok {
+						db.db[bucket] = make(map[string]Entry)
+					}
+					db.db[bucket][key] = entry
+				}
 			}
 		} else if data[0] == "DELETE" {
-			delete(db.db[data[1]], data[2])
+			bucket := data[1]
+			key := data[2]
+			if inTransaction {
+				if _, ok := pendingBatch[bucket]; ok {
+					delete(pendingBatch[bucket], key)
+				}
+			} else {
+				if _, ok := db.db[bucket]; ok {
+					delete(db.db[bucket], key)
+				}
+			}
 		}
 	}
 	fmt.Println("Loading Complete")
@@ -141,4 +192,73 @@ func (db *KeyValueDb) Merge() {
 		fmt.Println("Error opening file", err)
 		return
 	}
+}
+
+func (db *KeyValueDb) Update(fn func(tx *Tx) error) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	tx := &Tx{db: db, pending: make(map[string]map[string]Entry)}
+
+	if err := fn(tx); err != nil {
+		return err
+	}
+
+	db.file.Write([]byte("TX_BEGIN\n"))
+
+	for bucket, entries := range tx.pending {
+
+		for key, v := range entries {
+			if v.ExpireAt.After(time.Now()) {
+				line := fmt.Sprintf("SET,%s,%s,%s,%s\n", bucket, key, v.Value, v.ExpireAt.Format(time.RFC3339))
+				db.file.Write([]byte(line))
+			}
+		}
+	}
+
+	db.file.Write([]byte("TX_COMMIT\n"))
+
+	for bucket, entries := range tx.pending {
+		if _, ok := db.db[bucket]; !ok {
+			db.db[bucket] = make(map[string]Entry)
+		}
+		for k, v := range entries {
+			if v.ExpireAt.After(time.Now()) {
+				db.db[bucket][k] = v
+			}
+		}
+	}
+
+	return nil
+}
+
+type Tx struct {
+	db      *KeyValueDb
+	pending map[string]map[string]Entry //staging area
+}
+
+func (tx *Tx) Set(bucket string, key string, value string) error {
+	_, ok := tx.pending[bucket]
+
+	if !ok {
+		tx.pending[bucket] = make((map[string]Entry))
+	}
+	tx.pending[bucket][key] = Entry{Value: value, ExpireAt: time.Now().Add(time.Minute * 10)}
+	return nil
+}
+
+func (tx *Tx) Get(bucket string, key string) (string, error) {
+
+	_, ok := tx.pending[bucket]
+
+	if !ok {
+		return tx.db.Get(bucket, key)
+	}
+
+	v := tx.pending[bucket][key]
+
+	if v.ExpireAt.Before(time.Now()) {
+		return "", errors.New("Key has expired")
+	}
+	return v.Value, nil
 }
