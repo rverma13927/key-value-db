@@ -44,7 +44,7 @@ func HandleGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	db = kv.NewKeyValueDb()
+	db = kv.NewKeyValueDb("db.log")
 	db.Load()
 
 	http.HandleFunc("/set", HandleSet)
